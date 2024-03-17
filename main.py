@@ -3,7 +3,7 @@ Following along with Andrej Karpathy's video: "Let's build GPT: from scratch, in
 (link: https://www.youtube.com/watch?v=kCc8FmEb1nY)
 """
 import time
-from typing import Tuple, Union
+from typing import Dict, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -11,7 +11,7 @@ from torch.nn import functional as F
 
 
 class GeePT:
-    def __init__(self, vocabulary: str, device):
+    def __init__(self, vocabulary: str, device: torch.device):
         # A list of the valid tokens. The position of the token
         #   is that tokens encoded value.
         self._vocabulary = vocabulary
@@ -23,9 +23,8 @@ class GeePT:
         """
         encoded = torch.tensor(
             [self._vocabulary.index(char) for char in chars],
+            device=self._device,
         )
-        if self._device:
-            encoded = encoded.to(self._device)
         return encoded
 
     def decode(self, tokens: torch.Tensor) -> str:
@@ -36,14 +35,26 @@ class GeePT:
 
 
 class Dataset:
-    def __init__(self, gpt: GeePT, text: str, train_ratio: float):
+    def __init__(
+        self,
+        gpt: GeePT,
+        text: str,
+        train_ratio: float,
+        device: torch.device,
+        batch_size: int,
+        block_size: int,
+    ) -> None:
         data = gpt.encode(text)
         N = int(train_ratio * len(data))
         self.train_data = data[:N]
         self.val_data = data[N:]
+        self._device = device
+        self._batch_size = batch_size
+        self._block_size = block_size
 
     def getBatch(
-        self, split: str, batch_size: int, block_size: int
+        self,
+        split: str,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Create a small batch of inputs x and targets y.
@@ -52,13 +63,15 @@ class Dataset:
         batch_size -- the number of independent sequences to process in parallel.
         block_size -- the maximum context length.
         """
-        if split not in {"train", "test"}:
-            raise ValueError("Split must be 'train' or 'test'")
+        if split not in {"train", "val"}:
+            raise ValueError("Split must be 'train' or 'val'")
 
         data = self.train_data if split == "train" else self.val_data
-        random_idxs = torch.randint(len(data) - block_size, (batch_size,))
-        x = torch.stack([data[i : i + block_size] for i in random_idxs])
-        y = torch.stack([data[i + 1 : i + block_size + 1] for i in random_idxs])
+        random_idxs = torch.randint(len(data) - self._block_size, (self._batch_size,))
+        x = torch.stack([data[i : i + self._block_size] for i in random_idxs])
+        y = torch.stack([data[i + 1 : i + self._block_size + 1] for i in random_idxs])
+        x = x.to(self._device)
+        y = y.to(self._device)
         return x, y
 
 
@@ -109,7 +122,36 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 
-def main():
+def generateSequence(
+    gpt: GeePT, model: nn.Module, sequence_length: int, device: torch.device
+) -> str:
+    initial_token = torch.zeros((1, 1), device=device, dtype=torch.long)
+    generated_sequence = gpt.decode(
+        model.generate(initial_token, max_new_tokens=sequence_length)[0].tolist()
+    )
+    return generated_sequence
+
+
+@torch.no_grad()
+def estimateLoss(
+    model: nn.Module,
+    dataset: Dataset,
+    eval_iters: int,
+) -> Dict[str, torch.Tensor]:
+    out = {}
+    model.eval()
+    for split in ["train", "val"]:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = dataset.getBatch(split=split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
+
+def train():
     torch.manual_seed(1337)
 
     should_use_cuda = True and torch.cuda.is_available()
@@ -123,13 +165,15 @@ def main():
     # print(f"{gpt.decode(gpt.encode('hii there'))=}")
 
     train_ratio = 0.9
-    dataset = Dataset(gpt, text, train_ratio)
+    batch_size = 32
+    block_size = 8
+    dataset = Dataset(gpt, text, train_ratio, device, batch_size, block_size)
 
     model = BigramLanguageModel(len(vocabulary))
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     sequence_length = 100
-    generated_sequence = generateSequence(gpt, model, sequence_length)
+    generated_sequence = generateSequence(gpt, model, sequence_length, device)
     print("Generated sequence, pre-training:")
     print(80 * "<")
     print(generated_sequence)
@@ -137,18 +181,26 @@ def main():
 
     ts_training = time.time()
     num_epochs = 10_000
-    for step in range(num_epochs):
+    eval_interval = 300
+    eval_iters = 200
+    for iter in range(num_epochs):
+        if iter % eval_interval == 0:
+            losses = estimateLoss(model, dataset, eval_iters)
+            print(f"Step {iter}: train loss {losses['train']:0.4f}, "
+                  f"val loss {losses['val']:0.4f}")
+
         # sample a batch of data
-        xb, yb = dataset.getBatch(split="train", batch_size=32, block_size=8)
+        xb, yb = dataset.getBatch(split="train")
 
         # evaluate the loss
         logits, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+
     td_training = time.time() - ts_training
     print(f"Training took {td_training:0.3f} sec, loss={loss.item():0.5f}.")
-    generated_sequence = generateSequence(gpt, model, sequence_length)
+    generated_sequence = generateSequence(gpt, model, sequence_length, device)
 
     print("Generated sequence, post-training:")
     print(80 * "<")
@@ -156,21 +208,5 @@ def main():
     print(80 * ">")
 
 
-def generateSequence(gpt: GeePT, model: nn.Module, sequence_length: int) -> str:
-    initial_token = torch.zeros((1, 1), dtype=torch.long)
-    if next(model.parameters()).is_cuda:
-        initial_token = initial_token.to("cuda")
-    generated_sequence = gpt.decode(
-        model.generate(initial_token, max_new_tokens=sequence_length)[0].tolist()
-    )
-    return generated_sequence
-
-
-def initializeDevice(model: nn.Module):
-    shouldUseCuda = torch.cuda.is_available()
-    device = torch.device("cuda" if shouldUseCuda else "cpu")
-    return device
-
-
 if __name__ == "__main__":
-    main()
+    train()
