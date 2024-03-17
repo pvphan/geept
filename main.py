@@ -2,6 +2,7 @@
 Following along with Andrej Karpathy's video: "Let's build GPT: from scratch, in code, spelled out."
 (link: https://www.youtube.com/watch?v=kCc8FmEb1nY)
 """
+import time
 from typing import Tuple, Union
 
 import torch
@@ -10,18 +11,22 @@ from torch.nn import functional as F
 
 
 class GeePT:
-    def __init__(self, vocabulary: str):
+    def __init__(self, vocabulary: str, device):
         # A list of the valid tokens. The position of the token
         #   is that tokens encoded value.
         self._vocabulary = vocabulary
+        self._device = device
 
     def encode(self, chars: str) -> torch.Tensor:
         """
         Applies a simple encoding of characters to integers.
         """
-        return torch.tensor(
+        encoded = torch.tensor(
             [self._vocabulary.index(char) for char in chars],
         )
+        if self._device:
+            encoded = encoded.to(self._device)
+        return encoded
 
     def decode(self, tokens: torch.Tensor) -> str:
         """
@@ -37,18 +42,18 @@ class Dataset:
         self.train_data = data[:N]
         self.val_data = data[N:]
 
-    def getBatch(self, split: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    def getBatch(
+        self, split: str, batch_size: int, block_size: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Create a small batch of inputs x and targets y.
+
+        split -- "train" or "val".
+        batch_size -- the number of independent sequences to process in parallel.
+        block_size -- the maximum context length.
         """
         if split not in {"train", "test"}:
             raise ValueError("Split must be 'train' or 'test'")
-
-        # The maximum context length.
-        block_size = 8
-
-        # The number of independent sequences to process in parallel.
-        batch_size = 4
 
         data = self.train_data if split == "train" else self.val_data
         random_idxs = torch.randint(len(data) - block_size, (batch_size,))
@@ -106,35 +111,65 @@ class BigramLanguageModel(nn.Module):
 
 def main():
     torch.manual_seed(1337)
+
+    should_use_cuda = True and torch.cuda.is_available()
+    device = torch.device("cuda" if should_use_cuda else "cpu")
     with open("input.txt", "r") as f:
         text = f.read()
     vocabulary = createVocabulary(text)
-    gpt = GeePT(vocabulary)
-    print(f"{vocabulary=}")
-    print(f"{gpt.encode('hii there')=}")
-    print(f"{gpt.decode(gpt.encode('hii there'))=}")
+    gpt = GeePT(vocabulary, device)
+    # print(f"{vocabulary=}")
+    # print(f"{gpt.encode('hii there')=}")
+    # print(f"{gpt.decode(gpt.encode('hii there'))=}")
 
     train_ratio = 0.9
     dataset = Dataset(gpt, text, train_ratio)
-    # block_size = 8
-    # x = dataset.train_data[:block_size]
-    # y = dataset.train_data[1:block_size+1]
-    # for t in range(block_size):
-    #     context = x[:t+1]
-    #     target = y[t]
-    #     print(f"When input is {context}, the target is {target}")
 
-    m = BigramLanguageModel(len(vocabulary))
-    # xb, yb = dataset.getBatch("train")
-    # logits, loss = m(xb, yb)
-    # print(f"{logits.shape}")
-    # print(f"{loss=}")
-    initial_token = torch.zeros((1, 1), dtype=torch.long)
-    generated_sequence = gpt.decode(
-        m.generate(initial_token, max_new_tokens=100)[0].tolist()
-    )
+    model = BigramLanguageModel(len(vocabulary))
+    model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    sequence_length = 100
+    generated_sequence = generateSequence(gpt, model, sequence_length)
+    print("Generated sequence, pre-training:")
+    print(80 * "<")
     print(generated_sequence)
-    breakpoint()
+    print(80 * ">")
+
+    ts_training = time.time()
+    num_epochs = 10_000
+    for step in range(num_epochs):
+        # sample a batch of data
+        xb, yb = dataset.getBatch(split="train", batch_size=32, block_size=8)
+
+        # evaluate the loss
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+    td_training = time.time() - ts_training
+    print(f"Training took {td_training:0.3f} sec, loss={loss.item():0.5f}.")
+    generated_sequence = generateSequence(gpt, model, sequence_length)
+
+    print("Generated sequence, post-training:")
+    print(80 * "<")
+    print(generated_sequence)
+    print(80 * ">")
+
+
+def generateSequence(gpt: GeePT, model: nn.Module, sequence_length: int) -> str:
+    initial_token = torch.zeros((1, 1), dtype=torch.long)
+    if next(model.parameters()).is_cuda:
+        initial_token = initial_token.to("cuda")
+    generated_sequence = gpt.decode(
+        model.generate(initial_token, max_new_tokens=sequence_length)[0].tolist()
+    )
+    return generated_sequence
+
+
+def initializeDevice(model: nn.Module):
+    shouldUseCuda = torch.cuda.is_available()
+    device = torch.device("cuda" if shouldUseCuda else "cpu")
+    return device
 
 
 if __name__ == "__main__":
