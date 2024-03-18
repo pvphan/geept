@@ -84,16 +84,29 @@ def createVocabulary(text: str) -> str:
 
 
 class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size: int):
+    def __init__(
+        self,
+        vocab_size: int,
+        block_size: int,
+        num_embed_dims: int,
+        device: torch.device,
+    ):
         super().__init__()
-        self._token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+        self._token_embedding_table = nn.Embedding(vocab_size, num_embed_dims)
+        self._position_embedding_table = nn.Embedding(block_size, num_embed_dims)
+        self._lm_head = nn.Linear(num_embed_dims, vocab_size)
+        self._device = device
+        self._positions = torch.arange(num_embed_dims, device=self._device)
 
     def forward(
         self,
         idx: torch.Tensor,
         targets: Union[torch.Tensor, None] = None,
     ) -> Tuple[torch.Tensor, Union[torch.Tensor, None]]:
-        logits = self._token_embedding_table(idx)  # (B, T, C)
+        token_embeddings = self._token_embedding_table(idx)  # (B, T, C)
+        position_embeddings = self._position_embedding_table(self._positions)  # (T, C)
+        x = token_embeddings + position_embeddings
+        logits = self._lm_head(x)  # (B, T, vocab_size)
         loss = None
         if targets is not None:
             B, T, C = logits.shape
@@ -144,7 +157,7 @@ def estimateLoss(
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = dataset.getBatch(split=split)
-            logits, loss = model(X, Y)
+            _, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -169,7 +182,9 @@ def train():
     block_size = 8
     dataset = Dataset(gpt, text, train_ratio, device, batch_size, block_size)
 
-    model = BigramLanguageModel(len(vocabulary))
+    vocab_size = len(vocabulary)
+    num_embed_dims = 32
+    model = BigramLanguageModel(vocab_size, block_size, num_embed_dims, device)
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
 
@@ -196,7 +211,7 @@ def train():
         xb, yb = dataset.getBatch(split="train")
 
         # evaluate the loss
-        logits, loss = model(xb, yb)
+        _, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -238,7 +253,11 @@ def contextAveraging():
     xbow_softmax = w @ x
     assert torch.allclose(xbow_loop, xbow_softmax, atol=1e-7)
 
+    # Version 4: self-attention
+    tril = torch.tril(torch.ones(T, T))
+    w = torch.zeros((T, T))
+
 
 if __name__ == "__main__":
-    # train()
-    contextAveraging()
+    train()
+    # contextAveraging()
