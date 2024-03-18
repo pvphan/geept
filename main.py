@@ -187,8 +187,10 @@ def train():
     for iter in range(num_epochs):
         if iter % eval_interval == 0:
             losses = estimateLoss(model, dataset, eval_iters)
-            print(f"Step {iter}: train loss {losses['train']:0.4f}, "
-                  f"val loss {losses['val']:0.4f}")
+            print(
+                f"Step {iter}: train loss {losses['train']:0.4f}, "
+                f"val loss {losses['val']:0.4f}"
+            )
 
         # sample a batch of data
         xb, yb = dataset.getBatch(split="train")
@@ -211,7 +213,7 @@ def train():
 
 def contextAveraging():
     torch.manual_seed(1337)
-    B, T, C = 4, 8, 2 # batch, time, channels
+    B, T, C = 4, 8, 2  # batch, time, channels
     x = torch.randn(B, T, C)
     print(x.shape)
 
@@ -219,13 +221,13 @@ def contextAveraging():
     xbow_loop = torch.zeros((B, T, C))
     for b in range(B):
         for t in range(T):
-            xprev = x[b, :t+1] # (t, C)
+            xprev = x[b, : t + 1]  # (t, C)
             xbow_loop[b, t] = torch.mean(xprev, 0)
 
     # Version 2: broadcasting
     w = torch.tril(torch.ones(T, T))
     w /= w.sum(1, keepdim=True)
-    xbow_vec = w @ x # (B, T, T) @ (B, T, C) --> (B, T, C)
+    xbow_vec = w @ x  # (B, T, T) @ (B, T, C) --> (B, T, C)
     assert torch.allclose(xbow_loop, xbow_vec, atol=1e-7)
 
     # Version 3: use Softmax
