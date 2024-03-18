@@ -171,7 +171,8 @@ def train():
 
     model = BigramLanguageModel(len(vocabulary))
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+
     sequence_length = 100
     generated_sequence = generateSequence(gpt, model, sequence_length, device)
     print("Generated sequence, pre-training:")
@@ -208,5 +209,34 @@ def train():
     print(80 * ">")
 
 
+def contextAveraging():
+    torch.manual_seed(1337)
+    B, T, C = 4, 8, 2 # batch, time, channels
+    x = torch.randn(B, T, C)
+    print(x.shape)
+
+    # Version 1
+    xbow_loop = torch.zeros((B, T, C))
+    for b in range(B):
+        for t in range(T):
+            xprev = x[b, :t+1] # (t, C)
+            xbow_loop[b, t] = torch.mean(xprev, 0)
+
+    # Version 2: broadcasting
+    w = torch.tril(torch.ones(T, T))
+    w /= w.sum(1, keepdim=True)
+    xbow_vec = w @ x # (B, T, T) @ (B, T, C) --> (B, T, C)
+    assert torch.allclose(xbow_loop, xbow_vec, atol=1e-7)
+
+    # Version 3: use Softmax
+    tril = torch.tril(torch.ones(T, T))
+    w = torch.zeros((T, T))
+    w = w.masked_fill(tril == 0, float("-inf"))
+    w = F.softmax(w, dim=-1)
+    xbow_softmax = w @ x
+    assert torch.allclose(xbow_loop, xbow_softmax, atol=1e-7)
+
+
 if __name__ == "__main__":
-    train()
+    # train()
+    contextAveraging()
