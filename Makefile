@@ -5,7 +5,7 @@ REPO_PATH:=$(dir $(abspath $(firstword $(MAKEFILE_LIST))))
 IMAGE_TAG?=pvphan/geept-image:0.1
 
 ifneq ($(shell lshw -C display 2> /dev/null | grep NVIDIA | wc -l), 0)
-	GPU_FLAG:=--gpus=all
+	GPU_FLAG:=--gpus=all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
 endif
 
 RUN_FLAGS = \
