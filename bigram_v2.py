@@ -294,15 +294,10 @@ def train():
         device=device,
     )
     model.to(device)
-    learning_rate = 1e-3
+    learning_rate = 3e-4
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
     sequence_length = 100
-    generated_sequence = generateSequence(gpt, model, sequence_length, device)
-    print("Generated sequence, pre-training:")
-    print(80 * "<")
-    print(generated_sequence)
-    print(80 * ">")
 
     ts_training = time.time()
     num_epochs = 5_000
@@ -312,9 +307,12 @@ def train():
         if iter % eval_interval == 0:
             losses = estimateLoss(model, dataset, eval_iters)
             print(
-                f"Step {iter}: train loss {losses['train']:0.4f}, "
+                f"{bcolors.RESET}Step {iter} ({int(time.time() - ts_training)}s): train loss {losses['train']:0.4f}, "
                 f"val loss {losses['val']:0.4f}"
             )
+            generated_sequence = generateSequence(gpt, model, sequence_length, device)
+            print(f"Generated sequence, epoch={iter}:")
+            print(bcolors.OKCYAN + generated_sequence)
 
         # sample a batch of data
         xb, yb = dataset.getBatch(split="train")
@@ -328,11 +326,21 @@ def train():
     td_training = time.time() - ts_training
     print(f"Training took {td_training:0.3f} sec, loss={loss.item():0.5f}.")
     generated_sequence = generateSequence(gpt, model, sequence_length, device)
-
     print("Generated sequence, post-training:")
-    print(80 * "<")
-    print(generated_sequence)
-    print(80 * ">")
+    print(bcolors.OKCYAN + generated_sequence)
+
+
+class bcolors:
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    OKCYAN = "\033[96m"
+    OKGREEN = "\033[92m"
+    WARNING = "\033[93m"
+    FAIL = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
+    RESET = "\033[0m"
 
 
 def contextAveraging():
@@ -381,7 +389,7 @@ class MultiHeadAttention(nn.Module):
         self._proj = nn.Linear(num_embed_dims, num_embed_dims)
         self._dropout = nn.Dropout(dropout_ratio)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = torch.cat([head(x) for head in self._heads], dim=-1)
         out = self._dropout(self._proj(out))
         return out
