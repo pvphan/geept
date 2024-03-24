@@ -108,6 +108,7 @@ class BigramLanguageModel(nn.Module):
         max_new_tokens: int,
     ) -> torch.Tensor:
         # idx is (B, T) array of indices in the current context
+        print(idx.shape)
         for _ in range(max_new_tokens):
             # get the predictions
             logits, _ = self(idx)

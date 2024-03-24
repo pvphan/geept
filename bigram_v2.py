@@ -89,24 +89,52 @@ class BigramLanguageModel(nn.Module):
         vocab_size: int,
         block_size: int,
         num_embed_dims: int,
+        head_size: int,
         device: torch.device,
     ):
         super().__init__()
+        print(f"{vocab_size=}")
+        print(f"{block_size=}")
+        print(f"{num_embed_dims=}")
+        print(f"{head_size=}")
+        print(f"{device=}")
+        self._num_embed_dims = num_embed_dims
+        self._block_size = block_size
         self._token_embedding_table = nn.Embedding(vocab_size, num_embed_dims)
         self._position_embedding_table = nn.Embedding(block_size, num_embed_dims)
         self._lm_head = nn.Linear(num_embed_dims, vocab_size)
         self._device = device
         self._positions = torch.arange(num_embed_dims, device=self._device)
+        self._sa_head = SelfAttentionHead(num_embed_dims, block_size, head_size)
+        self._norm = nn.LayerNorm(num_embed_dims) # final layer norm
 
     def forward(
         self,
         idx: torch.Tensor,
         targets: Union[torch.Tensor, None] = None,
     ) -> Tuple[torch.Tensor, Union[torch.Tensor, None]]:
+        B, T = idx.shape
+        C = self._num_embed_dims
+        print(f"(B, T, C) = {B, T, C}")
         token_embeddings = self._token_embedding_table(idx)  # (B, T, C)
-        position_embeddings = self._position_embedding_table(self._positions)  # (T, C)
+        assert token_embeddings.shape == (B, T, C)
+        print(f"{token_embeddings.shape=}")
+        position_embeddings = self._position_embedding_table(
+                torch.arange(T, device=self._device)
+        ) # (T, C)
+        assert position_embeddings.shape == (T, C)
+        print(f"{position_embeddings.shape=}")
         x = token_embeddings + position_embeddings
+        assert x.shape == (B, T, C)
+        x = self._sa_head(x) # apply one head of self-attention
+        print(f"{x.shape=}")
+        assert x.shape == (B, T, C)
+        print(f"sa_head: {x.shape=}")
+        x = self._norm(x)
+        assert x.shape == (B, T, C)
         logits = self._lm_head(x)  # (B, T, vocab_size)
+        assert logits.shape == (B, T, C)
+        print(f"lm_head: {logits.shape=}")
         loss = None
         if targets is not None:
             B, T, C = logits.shape
@@ -122,8 +150,10 @@ class BigramLanguageModel(nn.Module):
     ) -> torch.Tensor:
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
+            # crop idx to the last block_size tokens
+            idx_cropped = idx[:, -self._block_size:]
             # get the predictions
-            logits, _ = self(idx)
+            logits, _ = self(idx_cropped)
             # focus only on the last time step
             logits = logits[:, -1, :]  # becomes (B, C)
             # apply softmax to get the probabilities
@@ -165,17 +195,12 @@ def estimateLoss(
 
 
 def train():
-    torch.manual_seed(1337)
-
     should_use_cuda = True and torch.cuda.is_available()
     device = torch.device("cuda" if should_use_cuda else "cpu")
     with open("input.txt", "r") as f:
         text = f.read()
     vocabulary = createVocabulary(text)
     gpt = GeePT(vocabulary, device)
-    # print(f"{vocabulary=}")
-    # print(f"{gpt.encode('hii there')=}")
-    # print(f"{gpt.decode(gpt.encode('hii there'))=}")
 
     train_ratio = 0.9
     batch_size = 32
@@ -184,9 +209,11 @@ def train():
 
     vocab_size = len(vocabulary)
     num_embed_dims = 32
-    model = BigramLanguageModel(vocab_size, block_size, num_embed_dims, device)
+    head_size = 16
+    model = BigramLanguageModel(vocab_size, block_size, num_embed_dims, head_size, device)
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+    learning_rate = 1e-3
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
     sequence_length = 100
     generated_sequence = generateSequence(gpt, model, sequence_length, device)
@@ -227,10 +254,8 @@ def train():
 
 
 def contextAveraging():
-    torch.manual_seed(1337)
     B, T, C = 4, 8, 2  # batch, time, channels
     x = torch.randn(B, T, C)
-    print(x.shape)
 
     # Version 1
     xbow_loop = torch.zeros((B, T, C))
@@ -253,11 +278,70 @@ def contextAveraging():
     xbow_softmax = w @ x
     assert torch.allclose(xbow_loop, xbow_softmax, atol=1e-7)
 
-    # Version 4: self-attention
+
+class SelfAttentionHead(nn.Module):
+    def __init__(self, num_embed_dims: int, block_size: int, head_size: int):
+        """
+        A single self-attention head.
+        """
+        super().__init__()
+        C = num_embed_dims
+        T = block_size
+        self._query = nn.Linear(C, head_size, bias=False)
+        self._key = nn.Linear(C, head_size, bias=False)
+        self._value = nn.Linear(C, head_size, bias=False)
+        self.register_buffer("tril", torch.tril(torch.ones(T, T)))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, C = x.shape
+        q = self._query(x)
+        k = self._key(x)
+        # compute affinities, with scaling
+        w = q @ k.transpose(-2, -1) * C**-0.5
+        # make sure the future doesn't communicate with the past
+        w = w.masked_fill(self.tril[:T, :T] == 0, float("-inf")) # (B, T, T)
+        w = F.softmax(w, dim=-1)
+        v = self._value(x) # (B, T, C)
+        print(f"{x.shape=}")
+        print(f"{q.shape=}")
+        print(f"{k.shape=}")
+        print(f"{v.shape=}")
+        out = w @ v # (B, T, T) @ (B, T, C) --> (B, T, C)
+        print(f"{out.shape=}")
+        assert out.shape == (B, T, C)
+        return out
+
+
+def selfAttention():
+    # Version 4: self-attention (single head)
+    B, T, C = 4, 8, 32  # batch, time, channels
+    head_size = 16
+    x = torch.randn(B, T, C)
     tril = torch.tril(torch.ones(T, T))
-    w = torch.zeros((T, T))
+    query = nn.Linear(C, head_size, bias=False)
+    key = nn.Linear(C, head_size, bias=False)
+    value = nn.Linear(C, head_size, bias=False)
+
+    # query: "what info am I looking for?" or "the information I'm interested in"
+    q = query(x) # (B, T, 16)
+    # key: "what info do I contain?" or "the information I have"
+    k = key(x) # (B, T, 16)
+    # value: "if you find me interesting, here's the information I'll communicate to you"
+    #   the thing that gets aggregated
+    v = value(x) # (B, T, 16)
+
+    # compute "affinities" as w
+    w = q @ k.transpose(-2, -1) # (B, T, 16) @ (B, 16, T) --> (B, T, T) "affinities"
+    w = w.masked_fill(tril == 0, float("-inf"))
+    w = F.softmax(w, dim=-1)
+
+    # apply the weights to the vector we aggregate, not the raw weights
+    out = w @ v # (B, T, T) @ (B, T, 16) --> (B, T, 16)
+    # think of x as private information to a particular token
+    assert out.shape == (B, T, head_size)
 
 
 if __name__ == "__main__":
+    torch.manual_seed(1337)
     train()
-    # contextAveraging()
+    # selfAttention()
