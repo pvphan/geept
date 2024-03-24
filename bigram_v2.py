@@ -307,12 +307,12 @@ def train():
         if iter % eval_interval == 0:
             losses = estimateLoss(model, dataset, eval_iters)
             print(
-                f"{bcolors.RESET}Step {iter} ({int(time.time() - ts_training)}s): train loss {losses['train']:0.4f}, "
+                f"Step {iter} ({int(time.time() - ts_training)}s): train loss {losses['train']:0.4f}, "
                 f"val loss {losses['val']:0.4f}"
             )
             generated_sequence = generateSequence(gpt, model, sequence_length, device)
             print(f"Generated sequence, epoch={iter}:")
-            print(bcolors.OKCYAN + generated_sequence)
+            print(f"{bcolors.OKCYAN}{generated_sequence}{bcolors.RESET}")
 
         # sample a batch of data
         xb, yb = dataset.getBatch(split="train")
@@ -330,6 +330,7 @@ def train():
     print(bcolors.OKCYAN + generated_sequence)
 
 
+# https://stackoverflow.com/questions/287871/how-do-i-print-colored-text-to-the-terminal
 class bcolors:
     HEADER = "\033[95m"
     OKBLUE = "\033[94m"
