@@ -108,7 +108,6 @@ class BigramLanguageModel(nn.Module):
         max_new_tokens: int,
     ) -> torch.Tensor:
         # idx is (B, T) array of indices in the current context
-        print(idx.shape)
         for _ in range(max_new_tokens):
             # get the predictions
             logits, _ = self(idx)
@@ -216,7 +215,6 @@ def contextAveraging():
     torch.manual_seed(1337)
     B, T, C = 4, 8, 2  # batch, time, channels
     x = torch.randn(B, T, C)
-    print(x.shape)
 
     # Version 1
     xbow_loop = torch.zeros((B, T, C))

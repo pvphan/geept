@@ -99,6 +99,7 @@ class BigramLanguageModel(nn.Module):
         print(f"{head_size=}")
         print(f"{device=}")
         self._num_embed_dims = num_embed_dims
+        self._vocab_size = vocab_size
         self._block_size = block_size
         self._token_embedding_table = nn.Embedding(vocab_size, num_embed_dims)
         self._position_embedding_table = nn.Embedding(block_size, num_embed_dims)
@@ -115,32 +116,34 @@ class BigramLanguageModel(nn.Module):
     ) -> Tuple[torch.Tensor, Union[torch.Tensor, None]]:
         B, T = idx.shape
         C = self._num_embed_dims
-        print(f"(B, T, C) = {B, T, C}")
+
         token_embeddings = self._token_embedding_table(idx)  # (B, T, C)
         assert token_embeddings.shape == (B, T, C)
-        print(f"{token_embeddings.shape=}")
+
         position_embeddings = self._position_embedding_table(
                 torch.arange(T, device=self._device)
-        ) # (T, C)
+        )
         assert position_embeddings.shape == (T, C)
-        print(f"{position_embeddings.shape=}")
+
         x = token_embeddings + position_embeddings
         assert x.shape == (B, T, C)
-        x = self._sa_head(x) # apply one head of self-attention
-        print(f"{x.shape=}")
+
+        x = self._sa_head(x)
         assert x.shape == (B, T, C)
-        print(f"sa_head: {x.shape=}")
+
         x = self._norm(x)
         assert x.shape == (B, T, C)
-        logits = self._lm_head(x)  # (B, T, vocab_size)
-        assert logits.shape == (B, T, C)
-        print(f"lm_head: {logits.shape=}")
+
+        logits = self._lm_head(x)
+        assert logits.shape == (B, T, self._vocab_size)
+
         loss = None
         if targets is not None:
             B, T, C = logits.shape
             logits = logits.view(B * T, C)
             targets = targets.view(B * T)
             loss = F.cross_entropy(logits, targets)
+
         return logits, loss
 
     def generate(
@@ -209,7 +212,7 @@ def train():
 
     vocab_size = len(vocabulary)
     num_embed_dims = 32
-    head_size = 16
+    head_size = num_embed_dims
     model = BigramLanguageModel(vocab_size, block_size, num_embed_dims, head_size, device)
     model.to(device)
     learning_rate = 1e-3
@@ -287,47 +290,57 @@ class SelfAttentionHead(nn.Module):
         super().__init__()
         C = num_embed_dims
         T = block_size
-        self._query = nn.Linear(C, head_size, bias=False)
-        self._key = nn.Linear(C, head_size, bias=False)
-        self._value = nn.Linear(C, head_size, bias=False)
+        H = head_size
+        self._head_size = head_size
+        self._key = nn.Linear(C, H, bias=False)
+        self._query = nn.Linear(C, H, bias=False)
+        self._value = nn.Linear(C, H, bias=False)
         self.register_buffer("tril", torch.tril(torch.ones(T, T)))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        H = self._head_size
         B, T, C = x.shape
-        q = self._query(x)
+
         k = self._key(x)
+        assert k.shape == (B, T, H)
+
+        q = self._query(x)
+        assert q.shape == (B, T, H)
+
         # compute affinities, with scaling
         w = q @ k.transpose(-2, -1) * C**-0.5
+        assert w.shape == (B, T, T)
+
         # make sure the future doesn't communicate with the past
-        w = w.masked_fill(self.tril[:T, :T] == 0, float("-inf")) # (B, T, T)
+        w = w.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        assert w.shape == (B, T, T)
         w = F.softmax(w, dim=-1)
-        v = self._value(x) # (B, T, C)
-        print(f"{x.shape=}")
-        print(f"{q.shape=}")
-        print(f"{k.shape=}")
-        print(f"{v.shape=}")
-        out = w @ v # (B, T, T) @ (B, T, C) --> (B, T, C)
-        print(f"{out.shape=}")
-        assert out.shape == (B, T, C)
+        assert w.shape == (B, T, T)
+
+        v = self._value(x)
+        assert v.shape == (B, T, H)
+
+        out = w @ v # (B, T, T) @ (B, T, H) --> (B, T, H)
+        assert out.shape == (B, T, H)
         return out
 
 
 def selfAttention():
     # Version 4: self-attention (single head)
     B, T, C = 4, 8, 32  # batch, time, channels
-    head_size = 16
+    H = 16 # head_size
     x = torch.randn(B, T, C)
     tril = torch.tril(torch.ones(T, T))
-    query = nn.Linear(C, head_size, bias=False)
-    key = nn.Linear(C, head_size, bias=False)
-    value = nn.Linear(C, head_size, bias=False)
+    query = nn.Linear(C, H, bias=False)
+    key = nn.Linear(C, H, bias=False)
+    value = nn.Linear(C, H, bias=False)
 
-    # query: "what info am I looking for?" or "the information I'm interested in"
+    # query: "the information I'm interested in"
     q = query(x) # (B, T, 16)
-    # key: "what info do I contain?" or "the information I have"
+    # key: "the information I have"
     k = key(x) # (B, T, 16)
-    # value: "if you find me interesting, here's the information I'll communicate to you"
-    #   the thing that gets aggregated
+    # value: "if you find me interesting, here's the information I'll communicate
+    #   to you". this is the thing that gets aggregated
     v = value(x) # (B, T, 16)
 
     # compute "affinities" as w
@@ -338,7 +351,7 @@ def selfAttention():
     # apply the weights to the vector we aggregate, not the raw weights
     out = w @ v # (B, T, T) @ (B, T, 16) --> (B, T, 16)
     # think of x as private information to a particular token
-    assert out.shape == (B, T, head_size)
+    assert out.shape == (B, T, H)
 
 
 if __name__ == "__main__":
