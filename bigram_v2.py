@@ -10,6 +10,20 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
+# https://stackoverflow.com/questions/287871/how-do-i-print-colored-text-to-the-terminal
+class bcolors:
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    OKCYAN = "\033[96m"
+    OKGREEN = "\033[92m"
+    WARNING = "\033[93m"
+    FAIL = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
+    RESET = "\033[0m"
+
+
 class GeePT:
     def __init__(self, vocabulary: str, device: str):
         # A list of the valid tokens. The position of the token
@@ -257,119 +271,6 @@ def estimateLoss(
     return out
 
 
-def train():
-    should_use_cuda = True and torch.cuda.is_available()
-    device = "cuda" if should_use_cuda else "cpu"
-    with open("input.txt", "r") as f:
-        text = f.read()
-    vocabulary = createVocabulary(text)
-    gpt = GeePT(vocabulary, device)
-
-    train_ratio = 0.9
-    batch_size = 64
-    block_size = 256
-    dataset = Dataset(
-        gpt=gpt,
-        text=text,
-        train_ratio=train_ratio,
-        device=device,
-        batch_size=batch_size,
-        block_size=block_size,
-    )
-
-    vocab_size = len(vocabulary)
-    num_embed_dims = 384
-    num_heads = 6
-    num_layers = 6
-    depth_factor = 4
-    dropout_ratio = 0.2
-    model = BigramLanguageModel(
-        vocab_size=vocab_size,
-        block_size=block_size,
-        num_embed_dims=num_embed_dims,
-        num_heads=num_heads,
-        num_layers=num_layers,
-        depth_factor=depth_factor,
-        dropout_ratio=dropout_ratio,
-        device=device,
-    )
-    model.to(device)
-    learning_rate = 3e-4
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-
-    sequence_length = 100
-
-    ts_training = time.time()
-    num_epochs = 5_000
-    eval_interval = 100
-    eval_iters = 200
-    for iter in range(num_epochs):
-        if iter % eval_interval == 0:
-            losses = estimateLoss(model, dataset, eval_iters)
-            print(
-                f"Step {iter} ({int(time.time() - ts_training)}s): train loss {losses['train']:0.4f}, "
-                f"val loss {losses['val']:0.4f}"
-            )
-            generated_sequence = generateSequence(gpt, model, sequence_length, device)
-            print(f"Generated sequence, epoch={iter}:")
-            print(f"{bcolors.OKCYAN}{generated_sequence}{bcolors.RESET}")
-
-        # sample a batch of data
-        xb, yb = dataset.getBatch(split="train")
-
-        # evaluate the loss
-        _, loss = model(xb, yb)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-
-    td_training = time.time() - ts_training
-    print(f"Training took {td_training:0.3f} sec, loss={loss.item():0.5f}.")
-    generated_sequence = generateSequence(gpt, model, sequence_length, device)
-    print("Generated sequence, post-training:")
-    print(bcolors.OKCYAN + generated_sequence)
-
-
-# https://stackoverflow.com/questions/287871/how-do-i-print-colored-text-to-the-terminal
-class bcolors:
-    HEADER = "\033[95m"
-    OKBLUE = "\033[94m"
-    OKCYAN = "\033[96m"
-    OKGREEN = "\033[92m"
-    WARNING = "\033[93m"
-    FAIL = "\033[91m"
-    ENDC = "\033[0m"
-    BOLD = "\033[1m"
-    UNDERLINE = "\033[4m"
-    RESET = "\033[0m"
-
-
-def contextAveraging():
-    B, T, C = 4, 8, 2  # batch, time, channels
-    x = torch.randn(B, T, C)
-
-    # Version 1
-    xbow_loop = torch.zeros((B, T, C))
-    for b in range(B):
-        for t in range(T):
-            xprev = x[b, : t + 1]  # (t, C)
-            xbow_loop[b, t] = torch.mean(xprev, 0)
-
-    # Version 2: broadcasting
-    w = torch.tril(torch.ones(T, T))
-    w /= w.sum(1, keepdim=True)
-    xbow_vec = w @ x  # (B, T, T) @ (B, T, C) --> (B, T, C)
-    assert torch.allclose(xbow_loop, xbow_vec, atol=1e-7)
-
-    # Version 3: use Softmax
-    tril = torch.tril(torch.ones(T, T))
-    w = torch.zeros((T, T))
-    w = w.masked_fill(tril == 0, float("-inf"))
-    w = F.softmax(w, dim=-1)
-    xbow_softmax = w @ x
-    assert torch.allclose(xbow_loop, xbow_softmax, atol=1e-7)
-
-
 class MultiHeadAttention(nn.Module):
     def __init__(
         self,
@@ -468,7 +369,79 @@ def selfAttention():
     assert out.shape == (B, T, H)
 
 
+def train():
+    should_use_cuda = True and torch.cuda.is_available()
+    device = "cuda" if should_use_cuda else "cpu"
+    with open("input.txt", "r") as f:
+        text = f.read()
+    vocabulary = createVocabulary(text)
+    gpt = GeePT(vocabulary, device)
+
+    train_ratio = 0.9
+    batch_size = 64
+    block_size = 256
+    dataset = Dataset(
+        gpt=gpt,
+        text=text,
+        train_ratio=train_ratio,
+        device=device,
+        batch_size=batch_size,
+        block_size=block_size,
+    )
+
+    vocab_size = len(vocabulary)
+    num_embed_dims = 384
+    num_heads = 6
+    num_layers = 6
+    depth_factor = 4
+    dropout_ratio = 0.2
+    model = BigramLanguageModel(
+        vocab_size=vocab_size,
+        block_size=block_size,
+        num_embed_dims=num_embed_dims,
+        num_heads=num_heads,
+        num_layers=num_layers,
+        depth_factor=depth_factor,
+        dropout_ratio=dropout_ratio,
+        device=device,
+    )
+    model.to(device)
+    learning_rate = 3e-4
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+    sequence_length = 100
+    num_epochs = 5_000
+    eval_interval = 100
+    eval_iters = 200
+    ts_training = time.time()
+    for iter in range(num_epochs):
+        if iter % eval_interval == 0:
+            losses = estimateLoss(model, dataset, eval_iters)
+            print(
+                f"Step {iter} ({int(time.time() - ts_training)}s): train loss {losses['train']:0.4f}, "
+                f"val loss {losses['val']:0.4f}"
+            )
+            generated_sequence = generateSequence(gpt, model, sequence_length, device)
+            print(f"Generated sequence, epoch={iter}:")
+            print(f"{bcolors.OKCYAN}{generated_sequence}{bcolors.RESET}")
+
+        # sample a batch of data
+        xb, yb = dataset.getBatch(split="train")
+
+        # evaluate the loss
+        _, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+    td_training = time.time() - ts_training
+    print(f"Training took {td_training:0.3f} sec, loss={loss.item():0.5f}.")
+    generated_sequence = generateSequence(gpt, model, sequence_length, device)
+    print("Generated sequence, post-training:")
+    print(bcolors.OKCYAN + generated_sequence)
+
+
 if __name__ == "__main__":
     torch.manual_seed(1337)
-    train()
     # selfAttention()
+    train()
