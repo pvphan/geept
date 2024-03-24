@@ -11,7 +11,7 @@ from torch.nn import functional as F
 
 
 class GeePT:
-    def __init__(self, vocabulary: str, device: torch.device):
+    def __init__(self, vocabulary: str, device: str):
         # A list of the valid tokens. The position of the token
         #   is that tokens encoded value.
         self._vocabulary = vocabulary
@@ -40,7 +40,7 @@ class Dataset:
         gpt: GeePT,
         text: str,
         train_ratio: float,
-        device: torch.device,
+        device: str,
         batch_size: int,
         block_size: int,
     ) -> None:
@@ -139,7 +139,7 @@ class BigramLanguageModel(nn.Module):
         num_layers: int,
         depth_factor: int,
         dropout_ratio: float,
-        device: torch.device,
+        device: str,
     ):
         head_size = num_embed_dims // num_heads
         super().__init__()
@@ -229,7 +229,7 @@ class BigramLanguageModel(nn.Module):
 
 
 def generateSequence(
-    gpt: GeePT, model: nn.Module, sequence_length: int, device: torch.device
+    gpt: GeePT, model: nn.Module, sequence_length: int, device: str
 ) -> str:
     initial_token = torch.zeros((1, 1), device=device, dtype=torch.long)
     generated_sequence = gpt.decode(
@@ -259,23 +259,30 @@ def estimateLoss(
 
 def train():
     should_use_cuda = True and torch.cuda.is_available()
-    device = torch.device("cuda" if should_use_cuda else "cpu")
+    device = "cuda" if should_use_cuda else "cpu"
     with open("input.txt", "r") as f:
         text = f.read()
     vocabulary = createVocabulary(text)
     gpt = GeePT(vocabulary, device)
 
     train_ratio = 0.9
-    batch_size = 32
-    block_size = 8
-    dataset = Dataset(gpt, text, train_ratio, device, batch_size, block_size)
+    batch_size = 64
+    block_size = 256
+    dataset = Dataset(
+        gpt=gpt,
+        text=text,
+        train_ratio=train_ratio,
+        device=device,
+        batch_size=batch_size,
+        block_size=block_size,
+    )
 
     vocab_size = len(vocabulary)
-    num_embed_dims = 32
-    num_heads = 1
-    num_layers = 3
+    num_embed_dims = 384
+    num_heads = 6
+    num_layers = 6
     depth_factor = 4
-    dropout_ratio = 0.0
+    dropout_ratio = 0.2
     model = BigramLanguageModel(
         vocab_size=vocab_size,
         block_size=block_size,
@@ -298,8 +305,8 @@ def train():
     print(80 * ">")
 
     ts_training = time.time()
-    num_epochs = 10_000
-    eval_interval = 300
+    num_epochs = 5_000
+    eval_interval = 100
     eval_iters = 200
     for iter in range(num_epochs):
         if iter % eval_interval == 0:
