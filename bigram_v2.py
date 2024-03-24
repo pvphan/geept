@@ -83,6 +83,57 @@ def createVocabulary(text: str) -> str:
     return "".join(sorted(list(set(text))))
 
 
+class FeedForward(nn.Module):
+    """
+    A simple linear layer followed by a non-linearity.
+    """
+
+    def __init__(self, num_embed_dims: int, depth_factor: int, dropout_ratio: float):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(num_embed_dims, depth_factor * num_embed_dims),
+            nn.ReLU(),
+            nn.Linear(depth_factor * num_embed_dims, num_embed_dims),
+            nn.Dropout(dropout_ratio),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class TransformerBlock(nn.Module):
+    """
+    Transformer block: communication followed by computation.
+    """
+
+    def __init__(
+        self,
+        block_size: int,
+        num_embed_dims: int,
+        num_heads: int,
+        depth_factor: int,
+        dropout_ratio: float,
+    ):
+        super().__init__()
+        head_size = num_embed_dims // num_heads
+        if num_heads == 1:
+            self._self_attention = SingleHeadAttention(
+                num_embed_dims, block_size, head_size
+            )
+        else:
+            self._self_attention = MultiHeadAttention(
+                num_embed_dims, block_size, head_size, num_heads, dropout_ratio
+            )
+        self._feed_forward = FeedForward(num_embed_dims, depth_factor, dropout_ratio)
+        self._layer_norm1 = nn.LayerNorm(num_embed_dims)
+        self._layer_norm2 = nn.LayerNorm(num_embed_dims)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self._self_attention(self._layer_norm1(x))
+        x = x + self._feed_forward(self._layer_norm2(x))
+        return x
+
+
 class BigramLanguageModel(nn.Module):
     def __init__(
         self,
@@ -90,6 +141,8 @@ class BigramLanguageModel(nn.Module):
         block_size: int,
         num_embed_dims: int,
         num_heads: int,
+        num_layers: int,
+        depth_factor: int,
         dropout_ratio: float,
         device: torch.device,
     ):
@@ -107,17 +160,19 @@ class BigramLanguageModel(nn.Module):
         self._token_embedding_table = nn.Embedding(vocab_size, num_embed_dims)
         self._position_embedding_table = nn.Embedding(block_size, num_embed_dims)
         self._lm_head = nn.Linear(num_embed_dims, vocab_size)
+        self._blocks = nn.Sequential(
+            *[
+                TransformerBlock(
+                    block_size=block_size,
+                    num_embed_dims=num_embed_dims,
+                    num_heads=num_heads,
+                    depth_factor=depth_factor,
+                    dropout_ratio=dropout_ratio)
+                for _ in range(num_layers)
+            ]
+        )
         self._device = device
-        self._positions = torch.arange(num_embed_dims, device=self._device)
-        if num_heads == 1:
-            self._self_attention = SingleHeadAttention(
-                num_embed_dims, block_size, head_size
-            )
-        else:
-            self._self_attention = MultiHeadAttention(
-                num_embed_dims, block_size, head_size, num_heads, dropout_ratio
-            )
-        self._norm = nn.LayerNorm(num_embed_dims) # final layer norm
+        self._layer_norm = nn.LayerNorm(num_embed_dims)
 
     def forward(
         self,
@@ -138,10 +193,10 @@ class BigramLanguageModel(nn.Module):
         x = token_embeddings + position_embeddings
         assert x.shape == (B, T, C)
 
-        x = self._self_attention(x)
+        x = self._blocks(x)
         assert x.shape == (B, T, C)
 
-        x = self._norm(x)
+        x = self._layer_norm(x)
         assert x.shape == (B, T, C)
 
         logits = self._lm_head(x)
@@ -223,12 +278,16 @@ def train():
     vocab_size = len(vocabulary)
     num_embed_dims = 32
     num_heads = 4
+    num_layers = 3
+    depth_factor = 4
     dropout_ratio = 0.0
     model = BigramLanguageModel(
         vocab_size=vocab_size,
         block_size=block_size,
         num_embed_dims=num_embed_dims,
         num_heads=num_heads,
+        num_layers=num_layers,
+        depth_factor=depth_factor,
         dropout_ratio=dropout_ratio,
         device=device,
     )
@@ -322,9 +381,7 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, x: torch.Tensor):
         out = torch.cat([head(x) for head in self._heads], dim=-1)
-        out = self._dropout(
-            self._proj(out)
-        )
+        out = self._dropout(self._proj(out))
         return out
 
 
