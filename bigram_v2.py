@@ -89,13 +89,16 @@ class BigramLanguageModel(nn.Module):
         vocab_size: int,
         block_size: int,
         num_embed_dims: int,
-        head_size: int,
+        num_heads: int,
+        dropout_ratio: float,
         device: torch.device,
     ):
+        head_size = num_embed_dims // num_heads
         super().__init__()
         print(f"{vocab_size=}")
         print(f"{block_size=}")
         print(f"{num_embed_dims=}")
+        print(f"{num_heads=}")
         print(f"{head_size=}")
         print(f"{device=}")
         self._num_embed_dims = num_embed_dims
@@ -106,7 +109,14 @@ class BigramLanguageModel(nn.Module):
         self._lm_head = nn.Linear(num_embed_dims, vocab_size)
         self._device = device
         self._positions = torch.arange(num_embed_dims, device=self._device)
-        self._sa_head = SelfAttentionHead(num_embed_dims, block_size, head_size)
+        if num_heads == 1:
+            self._self_attention = SingleHeadAttention(
+                num_embed_dims, block_size, head_size
+            )
+        else:
+            self._self_attention = MultiHeadAttention(
+                num_embed_dims, block_size, head_size, num_heads, dropout_ratio
+            )
         self._norm = nn.LayerNorm(num_embed_dims) # final layer norm
 
     def forward(
@@ -128,7 +138,7 @@ class BigramLanguageModel(nn.Module):
         x = token_embeddings + position_embeddings
         assert x.shape == (B, T, C)
 
-        x = self._sa_head(x)
+        x = self._self_attention(x)
         assert x.shape == (B, T, C)
 
         x = self._norm(x)
@@ -212,8 +222,16 @@ def train():
 
     vocab_size = len(vocabulary)
     num_embed_dims = 32
-    head_size = num_embed_dims
-    model = BigramLanguageModel(vocab_size, block_size, num_embed_dims, head_size, device)
+    num_heads = 4
+    dropout_ratio = 0.0
+    model = BigramLanguageModel(
+        vocab_size=vocab_size,
+        block_size=block_size,
+        num_embed_dims=num_embed_dims,
+        num_heads=num_heads,
+        dropout_ratio=dropout_ratio,
+        device=device,
+    )
     model.to(device)
     learning_rate = 1e-3
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -282,7 +300,35 @@ def contextAveraging():
     assert torch.allclose(xbow_loop, xbow_softmax, atol=1e-7)
 
 
-class SelfAttentionHead(nn.Module):
+class MultiHeadAttention(nn.Module):
+    def __init__(
+        self,
+        num_embed_dims: int,
+        block_size: int,
+        head_size: int,
+        num_heads: int,
+        dropout_ratio: float,
+    ):
+        """
+        A multi-head attention block.
+        """
+        super().__init__()
+        self._heads = nn.ModuleList([
+            SingleHeadAttention(num_embed_dims, block_size, head_size)
+            for _ in range(num_heads)
+        ])
+        self._proj = nn.Linear(num_embed_dims, num_embed_dims)
+        self._dropout = nn.Dropout(dropout_ratio)
+
+    def forward(self, x: torch.Tensor):
+        out = torch.cat([head(x) for head in self._heads], dim=-1)
+        out = self._dropout(
+            self._proj(out)
+        )
+        return out
+
+
+class SingleHeadAttention(nn.Module):
     def __init__(self, num_embed_dims: int, block_size: int, head_size: int):
         """
         A single self-attention head.
