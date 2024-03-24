@@ -116,14 +116,9 @@ class TransformerBlock(nn.Module):
     ):
         super().__init__()
         head_size = num_embed_dims // num_heads
-        if num_heads == 1:
-            self._self_attention = SingleHeadAttention(
-                num_embed_dims, block_size, head_size
-            )
-        else:
-            self._self_attention = MultiHeadAttention(
-                num_embed_dims, block_size, head_size, num_heads, dropout_ratio
-            )
+        self._self_attention = MultiHeadAttention(
+            num_embed_dims, block_size, head_size, num_heads, dropout_ratio
+        )
         self._feed_forward = FeedForward(num_embed_dims, depth_factor, dropout_ratio)
         self._layer_norm1 = nn.LayerNorm(num_embed_dims)
         self._layer_norm2 = nn.LayerNorm(num_embed_dims)
@@ -277,7 +272,7 @@ def train():
 
     vocab_size = len(vocabulary)
     num_embed_dims = 32
-    num_heads = 4
+    num_heads = 1
     num_layers = 3
     depth_factor = 4
     dropout_ratio = 0.0
